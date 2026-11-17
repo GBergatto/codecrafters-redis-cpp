@@ -3,5 +3,5 @@
 #include "fd.hpp"
 
 namespace redis {
-  void handleClient(UniqueFd client_fd);
+  bool handleClient(const UniqueFd& client_fd);
 }

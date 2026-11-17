@@ -1,8 +1,11 @@
 #include <iostream>
 #include <arpa/inet.h>
+#include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <unordered_map>
 #include <utility>
+#include <unistd.h>
 
 #include "server.hpp"
 #include "client.hpp"
@@ -45,20 +48,100 @@ namespace redis {
   }
 
   void runServer(const UniqueFd& server_fd) {
-    while (true) {
-      struct sockaddr_in client_addr{};
-      socklen_t client_addr_len = sizeof(client_addr);
-      std::cout << "Waiting for a client to connect...\n";
+    std::unordered_map<int, UniqueFd> clients;
 
-      UniqueFd client_fd{accept(server_fd.get(), reinterpret_cast<sockaddr*>(&client_addr), &client_addr_len)};
-      if (!client_fd) {
-        std::cerr << "accept failed";
+    UniqueFd epoll_fd{epoll_create1(EPOLL_CLOEXEC)};
+
+    if (!epoll_fd) {
+      std::cerr << "epoll_create1 failed\n";
+      return;
+    }
+
+    // Monitor server socket
+    epoll_event server_event{};
+    server_event.events = EPOLLIN; // server socket is readable = client waiting
+    server_event.data.fd = server_fd.get();
+
+    if (epoll_ctl(
+          epoll_fd.get(),
+          EPOLL_CTL_ADD,
+          server_fd.get(),
+          &server_event
+          ) < 0) {
+      std::cerr << "epoll_ctl failed\n";
+      return;
+    }
+
+    // Create buffer for reporting events on sockets
+    constexpr int MAX_EVENTS = 10;
+    epoll_event events[MAX_EVENTS];
+
+    while (true) {
+      int num_events = epoll_wait(
+          epoll_fd.get(),
+          events,
+          MAX_EVENTS,
+          -1
+          );
+
+      if (num_events < 0) {
+        std::cerr << "epoll_wait failed\n";
         return;
       }
-      std::cout << "Client connected\n";
 
-      // Transfer ownership of client fd
-      handleClient(std::move(client_fd));
+      for (int i = 0; i < num_events; ++i) {
+        int fd = events[i].data.fd;
+        std::cout << "Event on fd: " << fd << "\n";
+
+        if (fd == server_fd.get()) {
+          struct sockaddr_in client_addr{};
+          socklen_t client_addr_len = sizeof(client_addr);
+
+          // Accept client connection
+          UniqueFd client_fd{accept(server_fd.get(), reinterpret_cast<sockaddr*>(&client_addr), &client_addr_len)};
+          if (!client_fd) {
+            std::cerr << "accept failed";
+            return;
+          }
+          std::cout << "Client connected fd=" << client_fd.get() << "\n";
+
+          // Monitor client socket
+          epoll_event client_event{};
+          client_event.events = EPOLLIN; // client socket is readable = data available
+          client_event.data.fd = client_fd.get();
+
+          if (epoll_ctl(
+                epoll_fd.get(),
+                EPOLL_CTL_ADD,
+                client_fd.get(),
+                &client_event
+                ) < 0) {
+            std::cerr << "epoll_ctl failed\n";
+            return;
+          }
+
+          // Transfer ownership of client socket UniqueFd to clients map
+          clients.emplace(client_fd.get(), std::move(client_fd));
+
+          // TODO:
+          // Then, after accepting a client:
+          //   2. Register it with epoll using EPOLL_CTL_ADD.
+          //   3. Move its UniqueFd into clients.
+
+        } else {
+          auto it = clients.find(fd);
+
+          if (it == clients.end()) {
+            std::cerr << "Unknown client fd\n";
+            continue;
+          }
+
+          if (!handleClient(it->second)) {
+            epoll_ctl(epoll_fd.get(), EPOLL_CTL_DEL, fd, nullptr);
+            clients.erase(fd);
+          }
+        }
+      }
     }
   }
 
