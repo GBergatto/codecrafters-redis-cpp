@@ -89,9 +89,9 @@ namespace redis {
         return;
       }
 
+      // Loop on received events
       for (int i = 0; i < num_events; ++i) {
         int fd = events[i].data.fd;
-        std::cout << "Event on fd: " << fd << "\n";
 
         if (fd == server_fd.get()) {
           struct sockaddr_in client_addr{};
@@ -123,12 +123,7 @@ namespace redis {
           // Transfer ownership of client socket UniqueFd to clients map
           clients.emplace(client_fd.get(), std::move(client_fd));
 
-          // TODO:
-          // Then, after accepting a client:
-          //   2. Register it with epoll using EPOLL_CTL_ADD.
-          //   3. Move its UniqueFd into clients.
-
-        } else {
+        } else { // event on client socket
           auto it = clients.find(fd);
 
           if (it == clients.end()) {

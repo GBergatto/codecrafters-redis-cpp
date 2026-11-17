@@ -16,7 +16,7 @@ namespace redis {
    * @return true if the connection is still open ; false if the connection has
    * been closed or an error occurred and the client should be removed from epoll.
    */
-  bool handleClient(const UniqueFd &client_fd) {
+  bool handleClient(const UniqueFd& client_fd) {
     char buffer[1024];
     ssize_t bytes_received = recv(client_fd.get(), buffer, sizeof(buffer), 0);
 
